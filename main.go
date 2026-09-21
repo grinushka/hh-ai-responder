@@ -3035,6 +3035,16 @@ func parseConfig() (Config, error) {
 	if !flags["contacts"] {
 		cfg.Contacts = getEnv("HH_CONTACTS", cfg.Contacts)
 	}
+	if !flags["force-letter"] {
+		value := strings.TrimSpace(os.Getenv("HH_FORCE_LETTER"))
+		if value != "" {
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("HH_FORCE_LETTER must be a boolean: %w", err)
+			}
+			cfg.ForceLetter = enabled
+		}
+	}
 
 	if cfg.AIAttempts < 1 {
 		return Config{}, errors.New("ai-attempts must be greater than 0")

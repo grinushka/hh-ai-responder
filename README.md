@@ -66,6 +66,7 @@ cp example.env .env
 | `HH_AI_BASE_URL`       | `-ai-base-url`       | Базовый URL OpenAI-compatible API.                                     |
 | `HH_AI_MODEL`          | `-ai-model`          | Модель AI.                                                             |
 | `HH_AI_API_KEY`        | `-ai-api-key`        | API key для OpenAI-compatible API.                                     |
+| `HH_FORCE_LETTER`      | `-force-letter`      | Генерировать сопроводительное письмо для каждого отклика.              |
 | `HH_LETTER_MODE`       | `-letter-mode`       | Способ генерации сопроводительного письма: `ai` или `template`.        |
 | `HH_LETTER_TEMPLATE_PATH` | `-letter-template` | Путь к файлу шаблона сопроводительного письма.                         |
 | `HH_LETTER_PROMPT`     | `-letter-prompt`     | Дополнительные инструкции для сопроводительного письма.                |
