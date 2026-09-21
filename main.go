@@ -92,6 +92,7 @@ type Config struct {
 	ForceLetter             bool
 	LetterMode              string
 	LetterTemplatePath      string
+	EnableAutoAnswer        bool
 	ExtraChatReplyPrompt    string
 }
 
@@ -1354,6 +1355,7 @@ type HHAIResponder struct {
 	forceLetter             bool
 	letterMode              string
 	letterTemplate          string
+	enableAutoAnswer        bool
 	extraChatReplyPrompt    string
 	chatURL                 string
 	resumeProfileFrontURL   string
@@ -1593,6 +1595,7 @@ func NewHHAIResponder(ctx context.Context, cfg Config) (*HHAIResponder, error) {
 		outputPath:              cfg.OutputPath,
 		forceLetter:             cfg.ForceLetter,
 		letterMode:              cfg.LetterMode,
+		enableAutoAnswer:        cfg.EnableAutoAnswer,
 		extraChatReplyPrompt:    cfg.ExtraChatReplyPrompt,
 	}
 
@@ -2996,6 +2999,7 @@ func parseConfig() (Config, error) {
 	flag.DurationVar(&cfg.ApplyInterval, "apply-interval", defaultApplyInterval, "Пауза между проходами откликов")
 	flag.BoolVar(&cfg.ListResumes, "R", false, "Показать список резюме и выйти")
 	flag.BoolVar(&cfg.ForceLetter, "force-letter", false, "Всегда генерировать сопроводительное письмо")
+	flag.BoolVar(&cfg.EnableAutoAnswer, "enable-auto-answer", false, "Автоматически отвечать работодателям в чатах")
 	flag.DurationVar(&cfg.AITimeout, "ai-timeout", defaultAITimeout, "Общий таймаут AI-запроса: соединение и чтение ответа")
 	flag.DurationVar(&cfg.AIConnectTimeout, "ai-connect-timeout", defaultAIConnectTimeout, "Таймаут соединения с AI-сервером")
 	flag.DurationVar(&cfg.RequestInterval, "request-interval", defaultRequestInterval, "Минимальный интервал между запросами к hh.ru")
@@ -3079,6 +3083,16 @@ func parseConfig() (Config, error) {
 				return Config{}, err
 			}
 			cfg.ApplyInterval = interval
+		}
+	}
+	if !flags["enable-auto-answer"] {
+		value := strings.TrimSpace(os.Getenv("HH_ENABLE_AUTO_ANSWER"))
+		if value != "" {
+			enabled, err := strconv.ParseBool(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("HH_ENABLE_AUTO_ANSWER must be a boolean: %w", err)
+			}
+			cfg.EnableAutoAnswer = enabled
 		}
 	}
 
@@ -3301,26 +3315,30 @@ func (r *HHAIResponder) Run() {
 		}
 	}()
 
-	// Auto chat loop (every 15m after completion)
-	go func() {
-		for {
-			select {
-			case <-r.ctx.Done():
-				return
-			default:
-			}
+	if r.enableAutoAnswer {
+		// Auto chat loop (every 15m after completion)
+		go func() {
+			for {
+				select {
+				case <-r.ctx.Done():
+					return
+				default:
+				}
 
-			if err := r.AutoRespondChats(); err != nil {
-				logger.Error("Auto chat error: %v", err)
-			}
+				if err := r.AutoRespondChats(); err != nil {
+					logger.Error("Auto chat error: %v", err)
+				}
 
-			select {
-			case <-r.ctx.Done():
-				return
-			case <-time.After(15 * time.Minute):
+				select {
+				case <-r.ctx.Done():
+					return
+				case <-time.After(15 * time.Minute):
+				}
 			}
-		}
-	}()
+		}()
+	} else {
+		logger.Info("Auto chat replies disabled")
+	}
 
 	// Block main until shutdown
 	<-r.ctx.Done()
