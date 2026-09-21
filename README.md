@@ -66,6 +66,8 @@ cp example.env .env
 | `HH_AI_BASE_URL`       | `-ai-base-url`       | Базовый URL OpenAI-compatible API.                                     |
 | `HH_AI_MODEL`          | `-ai-model`          | Модель AI.                                                             |
 | `HH_AI_API_KEY`        | `-ai-api-key`        | API key для OpenAI-compatible API.                                     |
+| `HH_LETTER_MODE`       | `-letter-mode`       | Способ генерации сопроводительного письма: `ai` или `template`.        |
+| `HH_LETTER_TEMPLATE_PATH` | `-letter-template` | Путь к файлу шаблона сопроводительного письма.                         |
 | `HH_LETTER_PROMPT`     | `-letter-prompt`     | Дополнительные инструкции для сопроводительного письма.                |
 | `HH_SOLUTION_PROMPT`   | `-solution-prompt`   | Дополнительные инструкции для решения тестов.                          |
 | `HH_CHAT_REPLY_PROMPT` | `-chat-reply-prompt` | Дополнительные инструкции для ответов в чатах с работодателями.        |
@@ -80,6 +82,8 @@ HH_AI_BASE_URL="https://api.openai.com"
 HH_AI_MODEL="gpt-4o-mini"
 HH_AI_API_KEY="ваш_api_ключ_от_openai"
 ```
+
+Для сопроводительных без AI можно указать `HH_LETTER_MODE=template` и путь к файлу шаблона через `HH_LETTER_TEMPLATE_PATH`. В шаблоне поддерживаются случайные варианты в формате `{вариант 1|вариант 2|вариант 3}`.
 
 ## Docker
 

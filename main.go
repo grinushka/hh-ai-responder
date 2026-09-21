@@ -12,6 +12,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"math/big"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -41,8 +42,12 @@ const (
 	defaultAITimeout        = 30 * time.Second
 	defaultHost             = "hh.ru"
 	defaultGithubURL        = "https://github.com/s3rgeym"
+	defaultLetterMode       = "ai"
+	defaultLetterTemplate   = "cover-letter-template.txt"
 	defaultRequestInterval  = 1200 * time.Millisecond
 	defaultWorkers          = 2
+	letterModeAI            = "ai"
+	letterModeTemplate      = "template"
 	secCHUAHeader           = `"Chromium";v="151", "Google Chrome";v="151", "Not-A.Brand";v="99"`
 	userAgent               = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 )
@@ -59,6 +64,7 @@ const (
 var (
 	logger                  *Logger
 	latesteResumeHashRegexp = regexp.MustCompile(`"latestResumeHash":"([a-f0-9]{30,})"`)
+	letterTemplateRegexp    = regexp.MustCompile(`\{([^{}\n]*(?:\|[^{}\n]*)+)\}`)
 	userIdRegexp            = regexp.MustCompile(`"userId":(\d+)`)
 )
 
@@ -81,6 +87,8 @@ type Config struct {
 	Contacts                string
 	ListResumes             bool
 	ForceLetter             bool
+	LetterMode              string
+	LetterTemplatePath      string
 	ExtraChatReplyPrompt    string
 }
 
@@ -1339,6 +1347,8 @@ type HHAIResponder struct {
 	contacts                string
 	outputPath              string
 	forceLetter             bool
+	letterMode              string
+	letterTemplate          string
 	extraChatReplyPrompt    string
 	chatURL                 string
 	resumeProfileFrontURL   string
@@ -1575,7 +1585,19 @@ func NewHHAIResponder(ctx context.Context, cfg Config) (*HHAIResponder, error) {
 		contacts:                cfg.Contacts,
 		outputPath:              cfg.OutputPath,
 		forceLetter:             cfg.ForceLetter,
+		letterMode:              cfg.LetterMode,
 		extraChatReplyPrompt:    cfg.ExtraChatReplyPrompt,
+	}
+
+	if cfg.LetterMode == letterModeTemplate {
+		templateData, err := os.ReadFile(cfg.LetterTemplatePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read letter template: %w", err)
+		}
+		responder.letterTemplate = string(templateData)
+		if strings.TrimSpace(responder.letterTemplate) == "" {
+			return nil, errors.New("letter template is empty")
+		}
 	}
 
 	responder.requester = NewHHRequester(ctx, client, cfg.RequestInterval)
@@ -1852,6 +1874,75 @@ func (c *AIClient) GenerateLetter(v Vacancy, vacancyDescription, fullName, resum
 	)
 
 	return c.Chat(systemPrompt, userPrompt, 512, 0.8)
+}
+
+func renderLetterTemplate(templateText string) (string, error) {
+	var renderErr error
+	rendered := letterTemplateRegexp.ReplaceAllStringFunc(templateText, func(match string) string {
+		if renderErr != nil {
+			return match
+		}
+
+		matches := letterTemplateRegexp.FindStringSubmatch(match)
+		if len(matches) < 2 {
+			return match
+		}
+
+		options := strings.Split(matches[1], "|")
+		choice, err := randomTemplateChoice(options)
+		if err != nil {
+			renderErr = err
+			return match
+		}
+
+		return strings.TrimSpace(choice)
+	})
+	if renderErr != nil {
+		return "", renderErr
+	}
+
+	return strings.TrimSpace(rendered), nil
+}
+
+func randomTemplateChoice(options []string) (string, error) {
+	if len(options) == 0 {
+		return "", errors.New("template choice has no options")
+	}
+
+	index, err := rand.Int(rand.Reader, big.NewInt(int64(len(options))))
+	if err != nil {
+		return "", err
+	}
+
+	return options[index.Int64()], nil
+}
+
+func (r *HHAIResponder) GenerateCoverLetter(v Vacancy, vacancyURL string, resume *ResumeItem) (string, error) {
+	switch r.letterMode {
+	case letterModeAI:
+		vacancyDescription, _ := r.GetVacancyDescription(v.ID)
+		if vacancyDescription == "" {
+			return "", fmt.Errorf("vacancy is missing a description: %s", vacancyURL)
+		}
+
+		return r.ai.GenerateLetter(
+			v,
+			vacancyDescription,
+			r.GetFullName(),
+			resume.Title,
+			r.resumeExperience,
+			resume.Salary,
+			resume.Skills,
+			r.contacts,
+			r.extraLetterPrompt,
+		)
+
+	case letterModeTemplate:
+		return renderLetterTemplate(r.letterTemplate)
+
+	default:
+		return "", fmt.Errorf("unsupported letter mode: %s", r.letterMode)
+	}
 }
 
 func (c *AIClient) SolveTests(tasks []Task, contacts, extraPrompt string) (map[int]SolutionFields, error) {
@@ -2500,29 +2591,12 @@ func (r *HHAIResponder) ApplyVacancies() error {
 
 			var letter string
 			if vacancy.ResponseLetterRequired || r.forceLetter {
-				vacancyDescription, _ := r.GetVacancyDescription(vacancy.ID)
-
-				if vacancyDescription == "" {
-					logger.Warn("Vacancy is missing a description: %s", vacancyURL)
-					continue
-				}
-
-				letter, err = r.ai.GenerateLetter(
-					vacancy,
-					vacancyDescription,
-					r.GetFullName(),
-					resume.Title,
-					r.resumeExperience,
-					resume.Salary,
-					resume.Skills,
-					r.contacts,
-					r.extraLetterPrompt,
-				)
+				letter, err = r.GenerateCoverLetter(vacancy, vacancyURL, resume)
 				if err != nil || strings.TrimSpace(letter) == "" {
-					logger.Error("AI failed to generate letter for %s: %v", vacancyURL, err)
+					logger.Error("Failed to generate letter for %s: %v", vacancyURL, err)
 					continue
 				}
-				logger.Debug("Coverage letter:\n\n%s", letter)
+				logger.Debug("Cover letter:\n\n%s", letter)
 			}
 
 			var responseResult map[string]any
@@ -2917,6 +2991,8 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&cfg.ExtraTestSolutionPrompt, "solution-prompt", "", "Дополнительный промпт для решения тестов при отклике")
 	flag.StringVar(&cfg.ExtraChatReplyPrompt, "chat-reply-prompt", "", "Дополнительный промпт для сообщений в чатах с работодателями")
 	flag.StringVar(&cfg.ExtraLetterPrompt, "letter-prompt", "", "Дополнительный промпт для сопроводительного письма")
+	flag.StringVar(&cfg.LetterMode, "letter-mode", defaultLetterMode, "Способ генерации сопроводительного письма: ai, template")
+	flag.StringVar(&cfg.LetterTemplatePath, "letter-template", defaultLetterTemplate, "Путь к файлу шаблона сопроводительного письма")
 	flag.Parse()
 
 	_ = loadDotEnv(".env")
@@ -2944,6 +3020,12 @@ func parseConfig() (Config, error) {
 	if !flags["letter-prompt"] {
 		cfg.ExtraLetterPrompt = getEnv("HH_LETTER_PROMPT", cfg.ExtraLetterPrompt)
 	}
+	if !flags["letter-mode"] {
+		cfg.LetterMode = getEnv("HH_LETTER_MODE", cfg.LetterMode)
+	}
+	if !flags["letter-template"] {
+		cfg.LetterTemplatePath = getEnv("HH_LETTER_TEMPLATE_PATH", cfg.LetterTemplatePath)
+	}
 	if !flags["solution-prompt"] {
 		cfg.ExtraTestSolutionPrompt = getEnv("HH_SOLUTION_PROMPT", cfg.ExtraTestSolutionPrompt)
 	}
@@ -2968,6 +3050,16 @@ func parseConfig() (Config, error) {
 	}
 	if cfg.RequestInterval <= 0 {
 		return Config{}, errors.New("request-interval must be greater than 0")
+	}
+	cfg.LetterMode = strings.ToLower(strings.TrimSpace(cfg.LetterMode))
+	cfg.LetterTemplatePath = strings.TrimSpace(cfg.LetterTemplatePath)
+	switch cfg.LetterMode {
+	case letterModeAI, letterModeTemplate:
+	default:
+		return Config{}, fmt.Errorf("letter-mode must be one of: %s, %s", letterModeAI, letterModeTemplate)
+	}
+	if cfg.LetterMode == letterModeTemplate && strings.TrimSpace(cfg.LetterTemplatePath) == "" {
+		return Config{}, errors.New("letter-template must not be empty when letter-mode=template")
 	}
 
 	return cfg, nil
