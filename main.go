@@ -42,6 +42,7 @@ const (
 	defaultAITimeout        = 30 * time.Second
 	defaultHost             = "hh.ru"
 	defaultGithubURL        = "https://github.com/s3rgeym"
+	defaultApplyInterval    = 12 * time.Hour
 	defaultLetterMode       = "ai"
 	defaultLetterTemplate   = "cover-letter-template.txt"
 	defaultRequestInterval  = 1200 * time.Millisecond
@@ -74,6 +75,8 @@ type Config struct {
 	LogLevel                string
 	Resume                  string
 	MaxResponses            int
+	MaxApplicationsPerRun   int
+	ApplyInterval           time.Duration
 	AIBaseURL               string
 	AIModel                 string
 	AIAPIKey                string
@@ -1329,6 +1332,8 @@ type HHAIResponder struct {
 	searchParams            url.Values
 	cookiesPath             string
 	maxResponses            int
+	maxApplicationsPerRun   int
+	applyInterval           time.Duration
 	client                  *http.Client
 	jar                     *MemoryPersistentJar
 	requester               *HHRequester
@@ -1576,6 +1581,8 @@ func NewHHAIResponder(ctx context.Context, cfg Config) (*HHAIResponder, error) {
 		baseURL:                 baseURL,
 		cookiesPath:             cfg.CookiesPath,
 		maxResponses:            cfg.MaxResponses,
+		maxApplicationsPerRun:   cfg.MaxApplicationsPerRun,
+		applyInterval:           cfg.ApplyInterval,
 		client:                  client,
 		jar:                     jar,
 		resumeHash:              cfg.Resume,
@@ -2552,6 +2559,8 @@ func (r *HHAIResponder) ApplyVacancies() error {
 		return errors.New("resume not found")
 	}
 
+	applicationsSent := 0
+
 	for page := 0; ; page++ {
 		if r.ctx.Err() != nil {
 			return r.ctx.Err()
@@ -2652,6 +2661,11 @@ func (r *HHAIResponder) ApplyVacancies() error {
 					ResponsesCount: newCount,
 					TestSolutions:  solutions,
 				})
+				applicationsSent++
+				if r.maxApplicationsPerRun > 0 && applicationsSent >= r.maxApplicationsPerRun {
+					logger.Info("Reached application limit per run: %d", r.maxApplicationsPerRun)
+					return nil
+				}
 			} else {
 				logger.Warn("Application sent but response wrong: %s", vacancyURL)
 			}
@@ -2978,6 +2992,8 @@ func parseConfig() (Config, error) {
 	flag.StringVar(&cfg.Resume, "r", "", "ID резюме (если не указан — используется последнее)")
 	flag.StringVar(&cfg.OutputPath, "o", "", "Файл для вывода результатов (по умолчанию — в STDOUT)")
 	flag.IntVar(&cfg.MaxResponses, "mr", 0, "Пропускать вакансии с количеством откликов больше N")
+	flag.IntVar(&cfg.MaxApplicationsPerRun, "max-applications-per-run", 0, "Максимум успешных откликов за один проход (0 — без лимита)")
+	flag.DurationVar(&cfg.ApplyInterval, "apply-interval", defaultApplyInterval, "Пауза между проходами откликов")
 	flag.BoolVar(&cfg.ListResumes, "R", false, "Показать список резюме и выйти")
 	flag.BoolVar(&cfg.ForceLetter, "force-letter", false, "Всегда генерировать сопроводительное письмо")
 	flag.DurationVar(&cfg.AITimeout, "ai-timeout", defaultAITimeout, "Общий таймаут AI-запроса: соединение и чтение ответа")
@@ -3045,6 +3061,26 @@ func parseConfig() (Config, error) {
 			cfg.ForceLetter = enabled
 		}
 	}
+	if !flags["max-applications-per-run"] {
+		value := strings.TrimSpace(os.Getenv("HH_MAX_APPLICATIONS_PER_RUN"))
+		if value != "" {
+			limit, err := strconv.Atoi(value)
+			if err != nil {
+				return Config{}, fmt.Errorf("HH_MAX_APPLICATIONS_PER_RUN must be an integer: %w", err)
+			}
+			cfg.MaxApplicationsPerRun = limit
+		}
+	}
+	if !flags["apply-interval"] {
+		value := strings.TrimSpace(os.Getenv("HH_APPLY_INTERVAL"))
+		if value != "" {
+			interval, err := parseApplyInterval(value)
+			if err != nil {
+				return Config{}, err
+			}
+			cfg.ApplyInterval = interval
+		}
+	}
 
 	if cfg.AIAttempts < 1 {
 		return Config{}, errors.New("ai-attempts must be greater than 0")
@@ -3061,6 +3097,12 @@ func parseConfig() (Config, error) {
 	if cfg.RequestInterval <= 0 {
 		return Config{}, errors.New("request-interval must be greater than 0")
 	}
+	if cfg.MaxApplicationsPerRun < 0 {
+		return Config{}, errors.New("max-applications-per-run must be greater than or equal to 0")
+	}
+	if cfg.ApplyInterval <= 0 {
+		return Config{}, errors.New("apply-interval must be greater than 0")
+	}
 	cfg.LetterMode = strings.ToLower(strings.TrimSpace(cfg.LetterMode))
 	cfg.LetterTemplatePath = strings.TrimSpace(cfg.LetterTemplatePath)
 	switch cfg.LetterMode {
@@ -3073,6 +3115,25 @@ func parseConfig() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func parseApplyInterval(value string) (time.Duration, error) {
+	if interval, err := time.ParseDuration(value); err == nil {
+		if interval <= 0 {
+			return 0, errors.New("HH_APPLY_INTERVAL must be greater than 0")
+		}
+		return interval, nil
+	}
+
+	hours, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("HH_APPLY_INTERVAL must be a duration like 2h or a number of hours: %w", err)
+	}
+	if hours <= 0 {
+		return 0, errors.New("HH_APPLY_INTERVAL must be greater than 0")
+	}
+
+	return time.Duration(hours) * time.Hour, nil
 }
 
 func getEnv(name, fallback string) string {
@@ -3164,6 +3225,11 @@ func parseLogLevel(level string) LogLevel {
 
 func (r *HHAIResponder) Run() {
 	logger.Info("Starting tasks...")
+	if r.maxApplicationsPerRun > 0 {
+		logger.Info("Apply loop: up to %d applications every %s", r.maxApplicationsPerRun, r.applyInterval)
+	} else {
+		logger.Info("Apply loop: every %s (no per-pass limit)", r.applyInterval)
+	}
 
 	// Touch resume loop (every 4h after completion)
 	go func() {
@@ -3214,7 +3280,7 @@ func (r *HHAIResponder) Run() {
 		}
 	}()
 
-	// Apply vacancies loop (every 24h after completion)
+	// Apply vacancies loop (interval after each pass)
 	go func() {
 		for {
 			select {
@@ -3230,7 +3296,7 @@ func (r *HHAIResponder) Run() {
 			select {
 			case <-r.ctx.Done():
 				return
-			case <-time.After(12 * time.Hour):
+			case <-time.After(r.applyInterval):
 			}
 		}
 	}()

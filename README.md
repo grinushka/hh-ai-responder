@@ -73,6 +73,8 @@ cp example.env .env
 | `HH_SOLUTION_PROMPT`   | `-solution-prompt`   | Дополнительные инструкции для решения тестов.                          |
 | `HH_CHAT_REPLY_PROMPT` | `-chat-reply-prompt` | Дополнительные инструкции для ответов в чатах с работодателями.        |
 | `HH_CONTACTS`          | `-contacts`          | Контакты (телефон, email и т.д.), которые будут добавлены в сообщение. |
+| `HH_MAX_APPLICATIONS_PER_RUN` | `-max-applications-per-run` | Максимум успешных откликов за один проход (`0` — без лимита). |
+| `HH_APPLY_INTERVAL`    | `-apply-interval`    | Пауза между проходами откликов, например `2h` или `2` (часы). По умолчанию `12h`. |
 
 Например, для Chat-GPT нужно указать сл:
 
@@ -85,6 +87,13 @@ HH_AI_API_KEY="ваш_api_ключ_от_openai"
 ```
 
 Для сопроводительных без AI можно указать `HH_LETTER_MODE=template` и путь к файлу шаблона через `HH_LETTER_TEMPLATE_PATH`. В шаблоне поддерживаются случайные варианты в формате `{вариант 1|вариант 2|вариант 3}`.
+
+Чтобы слать отклики небольшими пачками, например 15 штук каждые 2 часа:
+
+```env
+HH_MAX_APPLICATIONS_PER_RUN=15
+HH_APPLY_INTERVAL=2h
+```
 
 ## Docker
 
